@@ -798,6 +798,104 @@ function findResistanceLevels(highs, closes, lookback) {
 }
 
 /**
+ * Analyze Volume characteristics
+ * @param {Array} closes - Array of closing prices
+ * @param {Array} volumes - Array of volume data
+ * @returns {Object} Analysis result
+ */
+function analyzeVolume(closes, volumes) {
+  const volumeSMA = technicalIndicators.sma(volumes, 20);
+  const currentVolume = volumes[volumes.length - 1];
+  const averageVolume = volumeSMA[volumeSMA.length - 1];
+
+  // Calculate volume ratio
+  const volumeRatio = currentVolume / averageVolume;
+
+  // Price change
+  const priceChange = closes[closes.length - 1] - closes[closes.length - 2];
+  const priceDirection =
+    priceChange > 0 ? "up" : priceChange < 0 ? "down" : "flat";
+
+  let direction = "NEUTRAL";
+  let confidence = 50;
+  const signals = [];
+
+  // High volume on price increase (bullish)
+  if (priceDirection === "up" && volumeRatio > 1.5) {
+    signals.push({
+      name: "High Volume Price Increase",
+      direction: "BUY",
+      strength: 60 + Math.min(20, Math.round((volumeRatio - 1.5) * 10)),
+    });
+  }
+
+  // High volume on price decrease (bearish)
+  if (priceDirection === "down" && volumeRatio > 1.5) {
+    signals.push({
+      name: "High Volume Price Decrease",
+      direction: "SELL",
+      strength: 60 + Math.min(20, Math.round((volumeRatio - 1.5) * 10)),
+    });
+  }
+
+  // Low volume on price movement (weak trend)
+  if (volumeRatio < 0.7 && priceDirection !== "flat") {
+    signals.push({
+      name: "Low Volume Price Movement",
+      direction: priceDirection === "up" ? "SELL" : "BUY",
+      strength: 55,
+    });
+  }
+
+  // Volume climax (potential reversal)
+  const isVolumePeak =
+    currentVolume > volumes[volumes.length - 2] * 2 &&
+    currentVolume > volumes[volumes.length - 3] * 2;
+
+  if (isVolumePeak) {
+    signals.push({
+      name: "Volume Climax",
+      direction: priceDirection === "up" ? "SELL" : "BUY",
+      strength: 70,
+    });
+  }
+
+  // Calculate direction and confidence based on signals
+  if (signals.length > 0) {
+    const buySignals = signals.filter((s) => s.direction === "BUY");
+    const sellSignals = signals.filter((s) => s.direction === "SELL");
+
+    const buyStrength = buySignals.reduce((sum, s) => sum + s.strength, 0);
+    const sellStrength = sellSignals.reduce((sum, s) => sum + s.strength, 0);
+
+    if (buyStrength > sellStrength) {
+      direction = "BUY";
+      confidence = Math.min(
+        85,
+        50 + Math.round((buyStrength - sellStrength) / 2)
+      );
+    } else if (sellStrength > buyStrength) {
+      direction = "SELL";
+      confidence = Math.min(
+        85,
+        50 + Math.round((sellStrength - buyStrength) / 2)
+      );
+    }
+  }
+
+  return {
+    direction,
+    confidence,
+    signals,
+    values: {
+      currentVolume,
+      averageVolume,
+      volumeRatio,
+    },
+  };
+}
+
+/**
  * Analyze Candlestick Patterns
  * @param {Array} barData - Array of price bar data
  * @returns {Object} Analysis result
@@ -956,6 +1054,7 @@ function analyzeCandlestickPatterns(barData) {
     patterns,
   };
 }
+
 /**
  * Analyze Fibonacci Retracement levels
  * @param {Array} highs - Array of high prices
@@ -1146,6 +1245,7 @@ function calculateFibonacciRetracementLevels(
 
   return levels;
 }
+
 /**
  * Analyze Average Directional Index (ADX) for trend strength
  * @param {Array} highs - Array of high prices
@@ -1251,6 +1351,7 @@ function analyzeADX(highs, lows, closes) {
     },
   };
 }
+
 /**
  * Analyze Market Sentiment from news and social media
  * @param {string} symbol - The trading symbol
@@ -1339,6 +1440,7 @@ async function analyzeMarketSentiment(symbol) {
     };
   }
 }
+
 /**
  * Calculate the final trading direction and confidence level
  * @param {Array} analyses - Array of analysis results
@@ -1424,12 +1526,18 @@ function calculateFinalResult(analyses) {
 
   let direction, confidence;
 
-  if (buyScore > sellScore) {
+  // Require a stronger signal difference to make a decision
+  // Added a 0.1 (10%) threshold to avoid conflicting signals
+  if (buyScore > sellScore + 0.1) {
     direction = "BUY";
     confidence = Math.round(buyScore * 100);
-  } else {
+  } else if (sellScore > buyScore + 0.1) {
     direction = "SELL";
     confidence = Math.round(sellScore * 100);
+  } else {
+    // If signals are too close, return NEUTRAL
+    direction = "NEUTRAL";
+    confidence = 50;
   }
 
   // Adjust confidence to be between 50-100
@@ -1461,102 +1569,5 @@ export function calculateFibonacciLevels(prices, isUptrend) {
     support: isUptrend
       ? highestPoint - range * 0.382
       : lowestPoint - range * 0.272,
-  };
-}
-/**
- * Analyze Volume characteristics
- * @param {Array} closes - Array of closing prices
- * @param {Array} volumes - Array of volume data
- * @returns {Object} Analysis result
- */
-function analyzeVolume(closes, volumes) {
-  const volumeSMA = technicalIndicators.sma(volumes, 20);
-  const currentVolume = volumes[volumes.length - 1];
-  const averageVolume = volumeSMA[volumeSMA.length - 1];
-
-  // Calculate volume ratio
-  const volumeRatio = currentVolume / averageVolume;
-
-  // Price change
-  const priceChange = closes[closes.length - 1] - closes[closes.length - 2];
-  const priceDirection =
-    priceChange > 0 ? "up" : priceChange < 0 ? "down" : "flat";
-
-  let direction = "NEUTRAL";
-  let confidence = 50;
-  const signals = [];
-
-  // High volume on price increase (bullish)
-  if (priceDirection === "up" && volumeRatio > 1.5) {
-    signals.push({
-      name: "High Volume Price Increase",
-      direction: "BUY",
-      strength: 60 + Math.min(20, Math.round((volumeRatio - 1.5) * 10)),
-    });
-  }
-
-  // High volume on price decrease (bearish)
-  if (priceDirection === "down" && volumeRatio > 1.5) {
-    signals.push({
-      name: "High Volume Price Decrease",
-      direction: "SELL",
-      strength: 60 + Math.min(20, Math.round((volumeRatio - 1.5) * 10)),
-    });
-  }
-
-  // Low volume on price movement (weak trend)
-  if (volumeRatio < 0.7 && priceDirection !== "flat") {
-    signals.push({
-      name: "Low Volume Price Movement",
-      direction: priceDirection === "up" ? "SELL" : "BUY",
-      strength: 55,
-    });
-  }
-
-  // Volume climax (potential reversal)
-  const isVolumePeak =
-    currentVolume > volumes[volumes.length - 2] * 2 &&
-    currentVolume > volumes[volumes.length - 3] * 2;
-
-  if (isVolumePeak) {
-    signals.push({
-      name: "Volume Climax",
-      direction: priceDirection === "up" ? "SELL" : "BUY",
-      strength: 70,
-    });
-  }
-
-  // Calculate direction and confidence based on signals
-  if (signals.length > 0) {
-    const buySignals = signals.filter((s) => s.direction === "BUY");
-    const sellSignals = signals.filter((s) => s.direction === "SELL");
-
-    const buyStrength = buySignals.reduce((sum, s) => sum + s.strength, 0);
-    const sellStrength = sellSignals.reduce((sum, s) => sum + s.strength, 0);
-
-    if (buyStrength > sellStrength) {
-      direction = "BUY";
-      confidence = Math.min(
-        85,
-        50 + Math.round((buyStrength - sellStrength) / 2)
-      );
-    } else if (sellStrength > buyStrength) {
-      direction = "SELL";
-      confidence = Math.min(
-        85,
-        50 + Math.round((sellStrength - buyStrength) / 2)
-      );
-    }
-  }
-
-  return {
-    direction,
-    confidence,
-    signals,
-    values: {
-      currentVolume,
-      averageVolume,
-      volumeRatio,
-    },
   };
 }

@@ -273,32 +273,148 @@ function generateSyntheticMarketData(symbol, timeframe = "1D", limit = 100) {
 }
 
 /**
- * Submit a market order
+ * Helper function for submitting market orders, providing additional validation and verification
  * @param {string} symbol - The trading symbol
  * @param {number} quantity - Order quantity
  * @param {string} side - Order side (buy/sell)
+ * @param {Object} options - Additional options like stopLoss, takeProfit, etc.
  * @returns {Promise<Object>} Order result
  */
-export async function submitMarketOrder(symbol, quantity, side) {
+async function submitMarketOrder(symbol, quantity, side, options = {}) {
   try {
-    const order = await alpacaClient.createOrder({
-      symbol,
-      qty: quantity,
-      side,
-      type: "market",
-      time_in_force: "gtc",
-    });
+    const alpaca = getAlpacaClient();
 
+    // Log detailed order intent
+    console.log(
+      `Submitting ${side} market order for ${quantity} ${symbol} with options:`,
+      options
+    );
+
+    // First check if the symbol is tradable
+    let isTradable = false;
+    try {
+      const asset = await alpaca.getAsset(symbol);
+      isTradable = asset.tradable;
+      console.log(
+        `Asset details for ${symbol}: tradable=${asset.tradable}, class=${asset.class}, exchange=${asset.exchange}`
+      );
+    } catch (assetError) {
+      console.warn(
+        `Could not verify if ${symbol} is tradable: ${assetError.message}`
+      );
+      // Continue anyway as some symbols might not be found through getAsset but still tradable
+    }
+
+    // Check if market is open
+    let isMarketOpen = true;
+    try {
+      const clock = await alpaca.getClock();
+      isMarketOpen = clock.is_open;
+
+      if (!isMarketOpen) {
+        console.warn(
+          `Market is currently closed. Next open: ${new Date(
+            clock.next_open
+          ).toLocaleString()}`
+        );
+
+        // Some assets (crypto) can be traded 24/7
+        if (
+          symbol.includes("BTC") ||
+          symbol.includes("ETH") ||
+          symbol.includes("USD")
+        ) {
+          console.log(
+            `${symbol} might be tradable 24/7 despite market hours. Proceeding with order.`
+          );
+        } else {
+          throw new Error(`Market is closed for trading ${symbol}`);
+        }
+      }
+    } catch (clockError) {
+      console.warn(`Could not check market hours: ${clockError.message}`);
+    }
+
+    // Format quantity appropriately
+    const formattedQuantity = parseFloat(quantity.toFixed(8)); // Format to 8 decimal places max
+
+    // Prepare order parameters
+    const orderParams = {
+      symbol: symbol,
+      qty: formattedQuantity,
+      side: side.toLowerCase(),
+      type: "market",
+      time_in_force: options.timeInForce || "gtc", // Good 'til cancelled as default
+    };
+
+    // Add bracket order parameters if provided
+    if (options.stopLoss || options.takeProfit) {
+      orderParams.order_class = "bracket";
+
+      if (options.stopLoss) {
+        orderParams.stop_loss = {
+          stop_price: options.stopLoss,
+        };
+      }
+
+      if (options.takeProfit) {
+        orderParams.take_profit = {
+          limit_price: options.takeProfit,
+        };
+      }
+    }
+
+    console.log(
+      `Submitting order with parameters:`,
+      JSON.stringify(orderParams, null, 2)
+    );
+
+    // Submit the order
+    const order = await alpaca.createOrder(orderParams);
+    console.log(`Order submitted: ID=${order.id}, status=${order.status}`);
+
+    // Wait a moment for the order to be processed
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // Get updated order details
+    let updatedOrder;
+    try {
+      updatedOrder = await alpaca.getOrder(order.id);
+      console.log(
+        `Updated order status for ${order.id}: ${updatedOrder.status}`
+      );
+    } catch (orderCheckError) {
+      console.error(
+        `Error checking order ${order.id}: ${orderCheckError.message}`
+      );
+      // If we can't check the order, return the original order
+      updatedOrder = order;
+    }
+
+    // Return formatted order details
     return {
-      id: order.id,
-      symbol: order.symbol,
-      quantity: parseFloat(order.qty),
-      side: order.side,
-      type: order.type,
-      status: order.status,
+      id: updatedOrder.id,
+      symbol: updatedOrder.symbol,
+      quantity: parseFloat(updatedOrder.qty),
+      filledQuantity: parseFloat(updatedOrder.filled_qty || 0),
+      side: updatedOrder.side,
+      type: updatedOrder.type,
+      status: updatedOrder.status,
+      createdAt: updatedOrder.created_at,
+      filledAt: updatedOrder.filled_at,
+      fillPrice: updatedOrder.filled_avg_price
+        ? parseFloat(updatedOrder.filled_avg_price)
+        : null,
+      stopPrice: updatedOrder.stop_price
+        ? parseFloat(updatedOrder.stop_price)
+        : null,
+      limitPrice: updatedOrder.limit_price
+        ? parseFloat(updatedOrder.limit_price)
+        : null,
+      rejectReason: updatedOrder.reject_reason || null,
     };
   } catch (error) {
-    console.error(`Error submitting market order for ${symbol}:`, error);
+    console.error(`Error in submitMarketOrder for ${symbol}:`, error);
     throw error;
   }
 }

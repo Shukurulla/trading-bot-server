@@ -1,23 +1,9 @@
 // src/database/tradingDatabase.js
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-
-// Get current directory
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Database file paths
-const TRADES_FILE = path.join(__dirname, "../../data/trades.json");
-const ACTIVE_SYMBOLS_FILE = path.join(
-  __dirname,
-  "../../data/active_symbols.json"
-);
-const CONFIG_FILE = path.join(__dirname, "../../data/config.json");
+import { connectToDatabase, Trade, ActiveSymbol, Config } from "./mongodb.js";
 
 /**
  * Trading database service
- * Simple file-based storage for trading data
+ * MongoDB-based storage for trading data
  */
 class TradingDatabase {
   /**
@@ -25,97 +11,28 @@ class TradingDatabase {
    */
   static async initialize() {
     try {
-      // Create data directory if it doesn't exist
-      const dataDir = path.join(__dirname, "../../data");
-      if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
+      // Connect to MongoDB
+      const connected = await connectToDatabase();
+      if (!connected) {
+        console.error("Failed to initialize database connection");
+        return false;
       }
 
-      // Initialize trades file
-      if (!fs.existsSync(TRADES_FILE)) {
-        fs.writeFileSync(TRADES_FILE, JSON.stringify([], null, 2));
-      } else {
-        // Validate file content
-        try {
-          const content = fs.readFileSync(TRADES_FILE, "utf8");
-          if (!content || content.trim() === "") {
-            fs.writeFileSync(TRADES_FILE, JSON.stringify([], null, 2));
-          } else {
-            JSON.parse(content); // This will throw if content is not valid JSON
-          }
-        } catch (error) {
-          console.warn("Invalid trades file content, resetting to empty array");
-          fs.writeFileSync(TRADES_FILE, JSON.stringify([], null, 2));
-        }
-      }
-
-      // Initialize active symbols file
-      if (!fs.existsSync(ACTIVE_SYMBOLS_FILE)) {
-        fs.writeFileSync(ACTIVE_SYMBOLS_FILE, JSON.stringify([], null, 2));
-      } else {
-        // Validate file content
-        try {
-          const content = fs.readFileSync(ACTIVE_SYMBOLS_FILE, "utf8");
-          if (!content || content.trim() === "") {
-            fs.writeFileSync(ACTIVE_SYMBOLS_FILE, JSON.stringify([], null, 2));
-          } else {
-            JSON.parse(content); // This will throw if content is not valid JSON
-          }
-        } catch (error) {
-          console.warn(
-            "Invalid active symbols file content, resetting to empty array"
-          );
-          fs.writeFileSync(ACTIVE_SYMBOLS_FILE, JSON.stringify([], null, 2));
-        }
-      }
-
-      // Initialize config file
-      if (!fs.existsSync(CONFIG_FILE)) {
+      // Initialize config if it doesn't exist
+      const configCount = await Config.countDocuments();
+      if (configCount === 0) {
+        console.log("Initializing default config");
         const defaultConfig = {
-          maxRiskPercent: 10, // Maximum risk percent of balance for 100% confidence
-          minRiskPercent: 0.5, // Minimum risk percent of balance for low confidence
-          maxLot: 10, // Maximum lot size for 100% confidence
-          minLot: 0.01, // Minimum lot size for low confidence
-          targetDailyGrowth: 30, // Target daily growth percentage
-          stopLossMultiplier: 0.5, // Stop loss multiplier based on risk
-          takeProfitMultiplier: 1.5, // Take profit multiplier based on risk
+          maxRiskPercent: 10,
+          minRiskPercent: 0.5,
+          maxLot: 10,
+          minLot: 0.01,
+          targetDailyGrowth: 30,
+          stopLossMultiplier: 0.5,
+          takeProfitMultiplier: 1.5,
         };
 
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2));
-      } else {
-        // Validate file content
-        try {
-          const content = fs.readFileSync(CONFIG_FILE, "utf8");
-          if (!content || content.trim() === "") {
-            const defaultConfig = {
-              maxRiskPercent: 10,
-              minRiskPercent: 0.5,
-              maxLot: 10,
-              minLot: 0.01,
-              targetDailyGrowth: 30,
-              stopLossMultiplier: 0.5,
-              takeProfitMultiplier: 1.5,
-            };
-            fs.writeFileSync(
-              CONFIG_FILE,
-              JSON.stringify(defaultConfig, null, 2)
-            );
-          } else {
-            JSON.parse(content); // This will throw if content is not valid JSON
-          }
-        } catch (error) {
-          console.warn("Invalid config file content, resetting to default");
-          const defaultConfig = {
-            maxRiskPercent: 10,
-            minRiskPercent: 0.5,
-            maxLot: 10,
-            minLot: 0.01,
-            targetDailyGrowth: 30,
-            stopLossMultiplier: 0.5,
-            takeProfitMultiplier: 1.5,
-          };
-          fs.writeFileSync(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2));
-        }
+        await Config.create(defaultConfig);
       }
 
       console.log("Trading database initialized");
@@ -132,18 +49,8 @@ class TradingDatabase {
    */
   static async getTrades() {
     try {
-      if (!fs.existsSync(TRADES_FILE)) {
-        return [];
-      }
-
-      const data = fs.readFileSync(TRADES_FILE, "utf8");
-
-      // Handle empty file
-      if (!data || data.trim() === "") {
-        return [];
-      }
-
-      return JSON.parse(data);
+      const trades = await Trade.find().sort({ timestamp: -1 });
+      return trades;
     } catch (error) {
       console.error("Error reading trades:", error);
       return [];
@@ -157,18 +64,10 @@ class TradingDatabase {
    */
   static async saveTrade(trade) {
     try {
-      const trades = await this.getTrades();
-
-      // Add unique ID and timestamp
-      const newTrade = {
-        id: `trade_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        timestamp: new Date(),
+      await Trade.create({
         ...trade,
-      };
-
-      trades.push(newTrade);
-
-      fs.writeFileSync(TRADES_FILE, JSON.stringify(trades, null, 2));
+        timestamp: new Date(),
+      });
       return true;
     } catch (error) {
       console.error("Error saving trade:", error);
@@ -184,23 +83,16 @@ class TradingDatabase {
    */
   static async updateTrade(tradeId, updates) {
     try {
-      const trades = await this.getTrades();
+      const result = await Trade.findByIdAndUpdate(tradeId, {
+        ...updates,
+        updatedAt: new Date(),
+      });
 
-      const tradeIndex = trades.findIndex((t) => t.id === tradeId);
-
-      if (tradeIndex === -1) {
+      if (!result) {
         console.error(`Trade not found: ${tradeId}`);
         return false;
       }
 
-      // Update the trade
-      trades[tradeIndex] = {
-        ...trades[tradeIndex],
-        ...updates,
-        updatedAt: new Date(),
-      };
-
-      fs.writeFileSync(TRADES_FILE, JSON.stringify(trades, null, 2));
       return true;
     } catch (error) {
       console.error("Error updating trade:", error);
@@ -214,18 +106,8 @@ class TradingDatabase {
    */
   static async getActiveSymbols() {
     try {
-      if (!fs.existsSync(ACTIVE_SYMBOLS_FILE)) {
-        return [];
-      }
-
-      const data = fs.readFileSync(ACTIVE_SYMBOLS_FILE, "utf8");
-
-      // Handle empty file
-      if (!data || data.trim() === "") {
-        return [];
-      }
-
-      return JSON.parse(data);
+      const activeSymbols = await ActiveSymbol.find();
+      return activeSymbols.map((item) => item.symbol);
     } catch (error) {
       console.error("Error reading active symbols:", error);
       return [];
@@ -239,11 +121,10 @@ class TradingDatabase {
    */
   static async addActiveSymbol(symbol) {
     try {
-      const symbols = await this.getActiveSymbols();
+      const exists = await ActiveSymbol.findOne({ symbol });
 
-      if (!symbols.includes(symbol)) {
-        symbols.push(symbol);
-        fs.writeFileSync(ACTIVE_SYMBOLS_FILE, JSON.stringify(symbols, null, 2));
+      if (!exists) {
+        await ActiveSymbol.create({ symbol });
       }
 
       return true;
@@ -260,15 +141,7 @@ class TradingDatabase {
    */
   static async removeActiveSymbol(symbol) {
     try {
-      const symbols = await this.getActiveSymbols();
-
-      const index = symbols.indexOf(symbol);
-
-      if (index !== -1) {
-        symbols.splice(index, 1);
-        fs.writeFileSync(ACTIVE_SYMBOLS_FILE, JSON.stringify(symbols, null, 2));
-      }
-
+      await ActiveSymbol.deleteOne({ symbol });
       return true;
     } catch (error) {
       console.error("Error removing active symbol:", error);
@@ -282,8 +155,10 @@ class TradingDatabase {
    */
   static async getConfig() {
     try {
-      if (!fs.existsSync(CONFIG_FILE)) {
-        // Return default config if file doesn't exist
+      const config = await Config.findOne().sort({ lastUpdated: -1 });
+
+      if (!config) {
+        // Return default config if none exists
         return {
           maxRiskPercent: 10,
           minRiskPercent: 0.5,
@@ -295,23 +170,13 @@ class TradingDatabase {
         };
       }
 
-      const data = fs.readFileSync(CONFIG_FILE, "utf8");
+      // Convert to plain object and remove Mongoose specific properties
+      const configObj = config.toObject();
+      delete configObj._id;
+      delete configObj.__v;
+      delete configObj.lastUpdated;
 
-      // Handle empty file
-      if (!data || data.trim() === "") {
-        // Return default config if file is empty
-        return {
-          maxRiskPercent: 10,
-          minRiskPercent: 0.5,
-          maxLot: 10,
-          minLot: 0.01,
-          targetDailyGrowth: 30,
-          stopLossMultiplier: 0.5,
-          takeProfitMultiplier: 1.5,
-        };
-      }
-
-      return JSON.parse(data);
+      return configObj;
     } catch (error) {
       console.error("Error reading config:", error);
       // Return default config in case of error
@@ -334,16 +199,21 @@ class TradingDatabase {
    */
   static async updateConfig(config) {
     try {
-      // Make sure we have a valid config to update
-      const currentConfig = await this.getConfig();
+      // Get the current config
+      const currentConfig = await Config.findOne().sort({ lastUpdated: -1 });
 
-      // Merge with current config
-      const updatedConfig = {
-        ...currentConfig,
-        ...config,
-      };
+      if (currentConfig) {
+        // Update existing config
+        Object.assign(currentConfig, config, { lastUpdated: new Date() });
+        await currentConfig.save();
+      } else {
+        // Create new config
+        await Config.create({
+          ...config,
+          lastUpdated: new Date(),
+        });
+      }
 
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify(updatedConfig, null, 2));
       return true;
     } catch (error) {
       console.error("Error updating config:", error);
@@ -358,8 +228,8 @@ class TradingDatabase {
    */
   static async getTradesBySymbol(symbol) {
     try {
-      const trades = await this.getTrades();
-      return trades.filter((trade) => trade.symbol === symbol);
+      const trades = await Trade.find({ symbol }).sort({ entryTime: -1 });
+      return trades;
     } catch (error) {
       console.error(`Error getting trades for ${symbol}:`, error);
       return [];
@@ -374,12 +244,11 @@ class TradingDatabase {
    */
   static async getTradesByDateRange(startDate, endDate) {
     try {
-      const trades = await this.getTrades();
+      const trades = await Trade.find({
+        timestamp: { $gte: startDate, $lte: endDate },
+      }).sort({ timestamp: -1 });
 
-      return trades.filter((trade) => {
-        const tradeDate = new Date(trade.timestamp);
-        return tradeDate >= startDate && tradeDate <= endDate;
-      });
+      return trades;
     } catch (error) {
       console.error("Error getting trades by date range:", error);
       return [];
@@ -392,8 +261,8 @@ class TradingDatabase {
    */
   static async getOpenTrades() {
     try {
-      const trades = await this.getTrades();
-      return trades.filter((trade) => trade.status === "OPEN");
+      const trades = await Trade.find({ status: "OPEN" });
+      return trades;
     } catch (error) {
       console.error("Error getting open trades:", error);
       return [];
@@ -406,7 +275,7 @@ class TradingDatabase {
    */
   static async getStatistics() {
     try {
-      const trades = await this.getTrades();
+      const trades = await Trade.find();
 
       if (trades.length === 0) {
         return {

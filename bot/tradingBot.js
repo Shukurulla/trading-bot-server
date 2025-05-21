@@ -7,13 +7,13 @@ import TradingDatabase from "../database/tradingDatabase.js";
 
 // Trading bot configuration
 const DEFAULT_CONFIG = {
-  maxRiskPercent: 10,
+  maxRiskPercent: 5, // Changed from 10 to 5
   minRiskPercent: 0.5,
-  maxLot: 10,
+  maxLot: 5, // Changed from 10 to 5
   minLot: 0.01,
-  targetDailyGrowth: 30,
-  stopLossMultiplier: 0.5,
-  takeProfitMultiplier: 1.5,
+  targetDailyGrowth: 15, // Changed from 30 to 15
+  stopLossMultiplier: 0.75, // Changed from 0.5 to 0.75
+  takeProfitMultiplier: 2.0, // Changed from 1.5 to 2.0
 };
 
 // Active trading symbols
@@ -405,9 +405,11 @@ async function manageExistingPositions(symbol, data, analysis) {
 
     const currentDirection = position.side === "long" ? "BUY" : "SELL";
 
-    if (analysis.direction !== currentDirection && analysis.confidence >= 75) {
+    // Only close position if trend reversed with very high confidence
+    // Increased confidence threshold from 75 to 85
+    if (analysis.direction !== currentDirection && analysis.confidence >= 85) {
       console.log(
-        `${symbol}: Trend reversed with high confidence. Closing position and reversing.`
+        `${symbol}: Trend reversed with high confidence (${analysis.confidence}%). Closing position and reversing.`
       );
 
       await alpaca.closePosition(symbol);
@@ -429,14 +431,18 @@ async function manageExistingPositions(symbol, data, analysis) {
       const account = await alpaca.getAccount();
       const balance = parseFloat(account.equity);
       await openNewPosition(symbol, data, analysis, balance);
-    } else if (analysis.dangerSignals && analysis.dangerSignals.length > 0) {
+    }
+    // Only close on danger signals if they are really significant
+    else if (analysis.dangerSignals && analysis.dangerSignals.length > 0) {
+      // Changed importance threshold from 7 to 9, making it more strict
       const significantDanger = analysis.dangerSignals.some(
-        (signal) => signal.importance >= 7
+        (signal) => signal.importance >= 9
       );
 
-      if (significantDanger) {
+      // Only close if we have multiple danger signals or one very important one
+      if (significantDanger && analysis.dangerSignals.length >= 2) {
         console.log(
-          `${symbol}: Significant danger detected. Closing position to secure profits/minimize loss.`
+          `${symbol}: Multiple significant dangers detected. Closing position to secure profits/minimize loss.`
         );
 
         await alpaca.closePosition(symbol);
@@ -511,14 +517,47 @@ async function openNewPosition(symbol, data, analysis, balance) {
       analysis.direction === "BUY"
     );
 
+    // Better stop-loss and take-profit calculation
     let stopLossPrice, takeProfitPrice;
 
     if (analysis.direction === "BUY") {
-      stopLossPrice = fibLevels.support || currentPrice * (1 - 0.02);
-      takeProfitPrice = fibLevels.resistance || currentPrice * (1 + 0.05);
+      // For buy orders - more conservative stop loss (further away)
+      stopLossPrice = fibLevels.support
+        ? fibLevels.support
+        : currentPrice * (1 - 0.05); // Changed from 0.02 to 0.05 (5% away)
+
+      takeProfitPrice = fibLevels.resistance
+        ? fibLevels.resistance
+        : currentPrice * (1 + 0.08); // Changed from 0.05 to 0.08 (8% away)
     } else {
-      stopLossPrice = fibLevels.resistance || currentPrice * (1 + 0.02);
-      takeProfitPrice = fibLevels.support || currentPrice * (1 - 0.05);
+      // For sell orders
+      stopLossPrice = fibLevels.resistance
+        ? fibLevels.resistance
+        : currentPrice * (1 + 0.05); // Changed from 0.02 to 0.05
+
+      takeProfitPrice = fibLevels.support
+        ? fibLevels.support
+        : currentPrice * (1 - 0.08); // Changed from 0.05 to 0.08
+    }
+
+    // Add risk-reward validation
+    const riskAmount1 = Math.abs(currentPrice - stopLossPrice) * quantity;
+    const rewardAmount = Math.abs(takeProfitPrice - currentPrice) * quantity;
+    const riskRewardRatio = rewardAmount / (riskAmount1 || 1); // Avoid division by zero
+
+    // Only proceed if risk-reward ratio is favorable
+    if (riskRewardRatio < 1.5) {
+      // Adjust take-profit to ensure at least 1.5 risk-reward ratio
+      if (analysis.direction === "BUY") {
+        takeProfitPrice =
+          currentPrice + Math.abs(currentPrice - stopLossPrice) * 1.5;
+      } else {
+        takeProfitPrice =
+          currentPrice - Math.abs(currentPrice - stopLossPrice) * 1.5;
+      }
+      console.log(
+        `Adjusted take-profit price to ensure 1.5 risk-reward ratio for ${symbol}`
+      );
     }
 
     stopLossPrice = parseFloat(stopLossPrice.toFixed(2));
